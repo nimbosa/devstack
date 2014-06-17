@@ -47,6 +47,7 @@ function recreate_database_mysql {
 }
 
 function configure_database_mysql {
+    local slow_log
     echo_summary "Configuring and starting MySQL"
 
     if is_ubuntu; then
@@ -87,12 +88,17 @@ function configure_database_mysql {
     # set default db type to InnoDB
     sudo bash -c "source $TOP_DIR/functions && \
         iniset $MY_CONF mysqld bind-address 0.0.0.0 && \
+        iniset $MY_CONF mysqld sql_mode STRICT_ALL_TABLES && \
         iniset $MY_CONF mysqld default-storage-engine InnoDB"
 
 
     if [[ "$DATABASE_QUERY_LOGGING" == "True" ]]; then
         echo_summary "Enabling MySQL query logging"
-
+        if is_fedora && ! [[ $DISTRO =~ (rhel6) ]]; then
+            slow_log=/var/log/mariadb/mariadb-slow.log
+        else
+            slow_log=/var/log/mysql/mysql-slow.log
+        fi
         sudo sed -e '/log.slow.queries/d' \
             -e '/long.query.time/d' \
             -e '/log.queries.not.using.indexes/d' \
@@ -102,7 +108,7 @@ function configure_database_mysql {
         # 0 seconds) and log all non-indexed queries
         sudo bash -c "source $TOP_DIR/functions && \
             iniset $MY_CONF mysqld slow-query-log 1 && \
-            iniset $MY_CONF mysqld slow-query-log-file /var/log/mysql/mysql-slow.log && \
+            iniset $MY_CONF mysqld slow-query-log-file $slow_log && \
             iniset $MY_CONF mysqld long-query-time 0 && \
             iniset $MY_CONF mysqld log-queries-not-using-indexes 1"
 

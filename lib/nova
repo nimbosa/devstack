@@ -246,16 +246,6 @@ function configure_nova {
 
         # Get the sample configuration file in place
         cp $NOVA_DIR/etc/nova/api-paste.ini $NOVA_CONF_DIR
-
-        # Comment out the keystone configs in Nova's api-paste.ini.
-        # We are using nova.conf to configure this instead.
-        inicomment $NOVA_API_PASTE_INI filter:authtoken auth_host
-        inicomment $NOVA_API_PASTE_INI filter:authtoken auth_protocol
-        inicomment $NOVA_API_PASTE_INI filter:authtoken admin_tenant_name
-        inicomment $NOVA_API_PASTE_INI filter:authtoken cafile
-        inicomment $NOVA_API_PASTE_INI filter:authtoken admin_user
-        inicomment $NOVA_API_PASTE_INI filter:authtoken admin_password
-        inicomment $NOVA_API_PASTE_INI filter:authtoken signing_dir
     fi
 
     if is_service_enabled n-cpu; then
@@ -312,6 +302,10 @@ function configure_nova {
                 sudo mount -L nova-instances $NOVA_INSTANCES_PATH
                 sudo chown -R $STACK_USER $NOVA_INSTANCES_PATH
             fi
+        fi
+        if is_suse; then
+            # iscsid is not started by default
+            start_service iscsid
         fi
     fi
 
@@ -438,12 +432,7 @@ function create_nova_conf {
     iniset $NOVA_CONF DEFAULT default_floating_pool "$PUBLIC_NETWORK_NAME"
     iniset $NOVA_CONF DEFAULT s3_host "$SERVICE_HOST"
     iniset $NOVA_CONF DEFAULT s3_port "$S3_SERVICE_PORT"
-    iniset $NOVA_CONF DEFAULT osapi_compute_extension "nova.api.openstack.compute.contrib.standard_extensions"
     iniset $NOVA_CONF DEFAULT my_ip "$HOST_IP"
-    iniset $NOVA_CONF DEFAULT osapi_compute_workers "4"
-    iniset $NOVA_CONF DEFAULT ec2_workers "4"
-    iniset $NOVA_CONF DEFAULT metadata_workers "4"
-    iniset $NOVA_CONF conductor workers "4"
     iniset $NOVA_CONF DEFAULT sql_connection `database_connection_url nova`
     iniset $NOVA_CONF DEFAULT instance_name_template "${INSTANCE_NAME_PREFIX}%08x"
     iniset $NOVA_CONF osapi_v3 enabled "True"
@@ -478,9 +467,6 @@ function create_nova_conf {
 
     iniset $NOVA_CONF keystone_authtoken signing_dir $NOVA_AUTH_CACHE_DIR
 
-    if is_service_enabled cinder; then
-        iniset $NOVA_CONF DEFAULT volume_api_class "nova.volume.cinder.API"
-    fi
     if [ -n "$NOVA_STATE_PATH" ]; then
         iniset $NOVA_CONF DEFAULT state_path "$NOVA_STATE_PATH"
         iniset $NOVA_CONF DEFAULT lock_path "$NOVA_STATE_PATH"

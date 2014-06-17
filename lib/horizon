@@ -45,7 +45,10 @@ function _horizon_config_set {
     local option=$3
     local value=$4
 
-    if grep -q "^$section" $file; then
+    if [ -z "$section" ]; then
+        sed -e "/^$option/d" -i $local_settings
+        echo -e "\n$option=$value" >> $file
+    elif grep -q "^$section" $file; then
         line=$(sed -ne "/^$section/,/^}/ { /^ *'$option':/ p; }" $file)
         if [ -n "$line" ]; then
             sed -i -e "/^$section/,/^}/ s/^\( *'$option'\) *:.*$/\1: $value,/" $file
@@ -72,6 +75,9 @@ function cleanup_horizon {
             sudo rm /usr/bin/node
         fi
     fi
+
+    local horizon_conf=$(apache_site_config_for horizon)
+    sudo rm -f $horizon_conf
 }
 
 # configure_horizon() - Set config files, create data dirs, etc
@@ -103,6 +109,13 @@ function init_horizon {
         _horizon_config_set $local_settings OPENSTACK_NEUTRON_NETWORK enable_vpn True
     fi
 
+    _horizon_config_set $local_settings "" OPENSTACK_HOST \"${KEYSTONE_SERVICE_HOST}\"
+    _horizon_config_set $local_settings "" OPENSTACK_KEYSTONE_URL "\"${KEYSTONE_SERVICE_PROTOCOL}://%s:${KEYSTONE_SERVICE_PORT}/v2.0\" % OPENSTACK_HOST"
+
+    if [ -f $SSL_BUNDLE_FILE ]; then
+        _horizon_config_set $local_settings "" OPENSTACK_SSL_CACERT \"${SSL_BUNDLE_FILE}\"
+    fi
+
     # Create an empty directory that apache uses as docroot
     sudo mkdir -p $HORIZON_DIR/.blackhole
 
@@ -112,22 +125,7 @@ function init_horizon {
         HORIZON_REQUIRE='Require all granted'
     fi
 
-    local horizon_conf=/etc/$APACHE_NAME/$APACHE_CONF_DIR/horizon.conf
-    if is_ubuntu; then
-        disable_apache_site 000-default
-        sudo touch $horizon_conf
-        enable_apache_site horizon.conf
-    elif is_fedora; then
-        sudo sed '/^Listen/s/^.*$/Listen 0.0.0.0:80/' -i /etc/httpd/conf/httpd.conf
-    elif is_suse; then
-        : # nothing to do
-    else
-        exit_distro_not_supported "horizon apache configuration"
-    fi
-
-    # Remove old log files that could mess with how devstack detects whether Horizon
-    # has been successfully started (see start_horizon() and functions::screen_it())
-    sudo rm -f /var/log/$APACHE_NAME/horizon_*
+    local horizon_conf=$(apache_site_config_for horizon)
 
     # Configure apache to run horizon
     sudo sh -c "sed -e \"
@@ -138,6 +136,23 @@ function init_horizon {
         s,%DEST%,$DEST,g;
         s,%HORIZON_REQUIRE%,$HORIZON_REQUIRE,g;
     \" $FILES/apache-horizon.template >$horizon_conf"
+
+    if is_ubuntu; then
+        disable_apache_site 000-default
+        sudo touch $horizon_conf
+    elif is_fedora; then
+        sudo sed '/^Listen/s/^.*$/Listen 0.0.0.0:80/' -i /etc/httpd/conf/httpd.conf
+    elif is_suse; then
+        : # nothing to do
+    else
+        exit_distro_not_supported "horizon apache configuration"
+    fi
+    enable_apache_site horizon
+
+    # Remove old log files that could mess with how devstack detects whether Horizon
+    # has been successfully started (see start_horizon() and functions::screen_it())
+    sudo rm -f /var/log/$APACHE_NAME/horizon_*
+
 }
 
 # install_horizon() - Collect source and prepare
