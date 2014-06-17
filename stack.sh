@@ -150,7 +150,7 @@ if [[ ! ${DISTRO} =~ (precise|saucy|trusty|7.0|wheezy|sid|testing|jessie|f19|f20
 fi
 
 # Look for obsolete stuff
-if [[ ,${ENABLED_SERVICES} =~ ,"swift" ]]; then
+if [[ ,${ENABLED_SERVICES}, =~ ,"swift", ]]; then
     echo "FATAL: 'swift' is not supported as a service name"
     echo "FATAL: Use the actual swift service names to enable tham as required:"
     echo "FATAL: s-proxy s-object s-container s-account"
@@ -410,7 +410,7 @@ function read_password {
             echo "Invalid chars in password.  Try again:"
         done
         if [ ! $pw ]; then
-            pw=`openssl rand -hex 10`
+            pw=$(cat /dev/urandom | tr -cd 'a-f0-9' | head -c 20)
         fi
         eval "$var=$pw"
         echo "$var=$pw" >> $localrc
@@ -494,14 +494,18 @@ function spinner {
     done
 }
 
+function kill_spinner {
+    if [ ! -z "$LAST_SPINNER_PID" ]; then
+        kill >/dev/null 2>&1 $LAST_SPINNER_PID
+        printf "\b\b\bdone\n" >&3
+    fi
+}
+
 # Echo text to the log file, summary log file and stdout
 # echo_summary "something to say"
 function echo_summary {
     if [[ -t 3 && "$VERBOSE" != "True" ]]; then
-        kill >/dev/null 2>&1 $LAST_SPINNER_PID
-        if [ ! -z "$LAST_SPINNER_PID" ]; then
-            printf "\b\b\bdone\n" >&3
-        fi
+        kill_spinner
         echo -n -e $@ >&6
         spinner &
         LAST_SPINNER_PID=$!
@@ -539,7 +543,8 @@ if [[ -n "$LOGFILE" ]]; then
 
     # Redirect output according to config
 
-    # Copy stdout to fd 3
+    # Set fd 3 to a copy of stdout. So we can set fd 1 without losing
+    # stdout later.
     exec 3>&1
     if [[ "$VERBOSE" == "True" ]]; then
         # Set fd 1 and 2 to write the log file
@@ -559,7 +564,8 @@ if [[ -n "$LOGFILE" ]]; then
     ln -sf $SUMFILE $LOGDIR/$LOGFILENAME.summary
 else
     # Set up output redirection without log files
-    # Copy stdout to fd 3
+    # Set fd 3 to a copy of stdout. So we can set fd 1 without losing
+    # stdout later.
     exec 3>&1
     if [[ "$VERBOSE" != "True" ]]; then
         # Throw away stdout and stderr
@@ -601,6 +607,10 @@ function exit_trap {
         echo "exit_trap: cleaning up child processes"
         kill 2>&1 $jobs
     fi
+
+    # Kill the last spinner process
+    kill_spinner
+
     exit $r
 }
 
@@ -1005,7 +1015,7 @@ if is_service_enabled n-net q-dhcp; then
     if is_service_enabled n-net; then
         rm -rf ${NOVA_STATE_PATH}/networks
         sudo mkdir -p ${NOVA_STATE_PATH}/networks
-        safe_chown -R ${USER} ${NOVA_STATE_PATH}/networks
+        safe_chown -R ${STACK_USER} ${NOVA_STATE_PATH}/networks
     fi
 
     # Force IP forwarding on, just in case

@@ -35,6 +35,8 @@ SAHARA_SERVICE_PROTOCOL=${SAHARA_SERVICE_PROTOCOL:-$SERVICE_PROTOCOL}
 
 SAHARA_AUTH_CACHE_DIR=${SAHARA_AUTH_CACHE_DIR:-/var/cache/sahara}
 
+SAHARA_ENABLED_PLUGINS=${SAHARA_ENABLED_PLUGINS:-vanilla,hdp,fake}
+
 # Support entry points installation of console scripts
 if [[ -d $SAHARA_DIR/bin ]]; then
     SAHARA_BIN_DIR=$SAHARA_DIR/bin
@@ -109,15 +111,18 @@ function configure_sahara {
     rm -rf $SAHARA_AUTH_CACHE_DIR/*
 
     # Set obsolete keystone auth configs for backward compatibility
-    iniset $SAHARA_CONF_FILE DEFAULT os_auth_host $KEYSTONE_SERVICE_HOST
-    iniset $SAHARA_CONF_FILE DEFAULT os_auth_port $KEYSTONE_SERVICE_PORT
-    iniset $SAHARA_CONF_FILE DEFAULT os_auth_protocol $KEYSTONE_SERVICE_PROTOCOL
+    iniset $SAHARA_CONF_FILE DEFAULT os_auth_host $KEYSTONE_AUTH_HOST
+    iniset $SAHARA_CONF_FILE DEFAULT os_auth_port $KEYSTONE_AUTH_PORT
+    iniset $SAHARA_CONF_FILE DEFAULT os_auth_protocol $KEYSTONE_AUTH_PROTOCOL
     iniset $SAHARA_CONF_FILE DEFAULT os_admin_password $SERVICE_PASSWORD
     iniset $SAHARA_CONF_FILE DEFAULT os_admin_username sahara
     iniset $SAHARA_CONF_FILE DEFAULT os_admin_tenant_name $SERVICE_TENANT_NAME
 
     # Set actual keystone auth configs
     iniset $SAHARA_CONF_FILE keystone_authtoken auth_uri $KEYSTONE_SERVICE_PROTOCOL://$KEYSTONE_SERVICE_HOST:$KEYSTONE_SERVICE_PORT/
+    iniset $SAHARA_CONF_FILE keystone_authtoken auth_host $KEYSTONE_AUTH_HOST
+    iniset $SAHARA_CONF_FILE keystone_authtoken auth_port $KEYSTONE_AUTH_PORT
+    iniset $SAHARA_CONF_FILE keystone_authtoken auth_protocol $KEYSTONE_AUTH_PROTOCOL
     iniset $SAHARA_CONF_FILE keystone_authtoken admin_tenant_name $SERVICE_TENANT_NAME
     iniset $SAHARA_CONF_FILE keystone_authtoken admin_user sahara
     iniset $SAHARA_CONF_FILE keystone_authtoken admin_password $SERVICE_PASSWORD
@@ -126,6 +131,8 @@ function configure_sahara {
 
     iniset $SAHARA_CONF_FILE DEFAULT verbose True
     iniset $SAHARA_CONF_FILE DEFAULT debug $ENABLE_DEBUG_LOG_LEVEL
+
+    iniset $SAHARA_CONF_FILE DEFAULT plugins $SAHARA_ENABLED_PLUGINS
 
     iniset $SAHARA_CONF_FILE database connection `database_connection_url sahara`
 
@@ -159,7 +166,7 @@ function install_sahara {
 
 # start_sahara() - Start running processes, including screen
 function start_sahara {
-    screen_it sahara "cd $SAHARA_DIR && $SAHARA_BIN_DIR/sahara-api --config-file $SAHARA_CONF_FILE"
+    screen_it sahara "cd $SAHARA_DIR && $SAHARA_BIN_DIR/sahara-all --config-file $SAHARA_CONF_FILE"
 }
 
 # stop_sahara() - Stop running processes

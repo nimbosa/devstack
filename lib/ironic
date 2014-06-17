@@ -42,7 +42,7 @@ IRONIC_POLICY_JSON=$IRONIC_CONF_DIR/policy.json
 IRONIC_SCRIPTS_DIR=${IRONIC_SCRIPTS_DIR:-$TOP_DIR/tools/ironic/scripts}
 IRONIC_TEMPLATES_DIR=${IRONIC_TEMPLATES_DIR:-$TOP_DIR/tools/ironic/templates}
 IRONIC_BAREMETAL_BASIC_OPS=$(trueorfalse False $IRONIC_BAREMETAL_BASIC_OPS)
-IRONIC_DRIVERS_WHITELIST=${IRONIC_DRIVERS_WHITELIST:-fake,pxe_ssh}
+IRONIC_ENABLED_DRIVERS=${IRONIC_ENABLED_DRIVERS:-fake,pxe_ssh,pxe_ipmitool}
 IRONIC_SSH_USERNAME=${IRONIC_SSH_USERNAME:-`whoami`}
 IRONIC_SSH_KEY_DIR=${IRONIC_SSH_KEY_DIR:-$IRONIC_DATA_DIR/ssh_keys}
 IRONIC_SSH_KEY_FILENAME=${IRONIC_SSH_KEY_FILENAME:-ironic_key}
@@ -53,17 +53,23 @@ IRONIC_VM_SSH_PORT=${IRONIC_VM_SSH_PORT:-22}
 IRONIC_VM_SSH_ADDRESS=${IRONIC_VM_SSH_ADDRESS:-$HOST_IP}
 IRONIC_VM_COUNT=${IRONIC_VM_COUNT:-1}
 IRONIC_VM_SPECS_CPU=${IRONIC_VM_SPECS_CPU:-1}
-# NOTE(agordeev): both ubuntu and fedora deploy images won't work with 256MB of RAM.
-#                 System halts and throws kernel panic during initramfs unpacking.
-#                 Ubuntu needs at least 384MB, but fedora requires 448.
-#                 So placing 512 here to satisfy both.
-IRONIC_VM_SPECS_RAM=${IRONIC_VM_SPECS_RAM:-512}
+# NOTE(adam_g): Kernels 3.12 and newer user tmpfs by default for initramfs.
+#               DIB produced ramdisks tend to be ~250MB but tmpfs will only allow
+#               use of 50% of available memory before ENOSPC.  Set minimum 1GB
+#               for nodes to avoid (LP: #1311987) and ensure consistency across
+#               older and newer kernels.
+IRONIC_VM_SPECS_RAM=${IRONIC_VM_SPECS_RAM:-1024}
 IRONIC_VM_SPECS_DISK=${IRONIC_VM_SPECS_DISK:-10}
+IRONIC_VM_EPHEMERAL_DISK=${IRONIC_VM_EPHEMERAL_DISK:-0}
 IRONIC_VM_EMULATOR=${IRONIC_VM_EMULATOR:-/usr/bin/qemu-system-x86_64}
 IRONIC_VM_NETWORK_BRIDGE=${IRONIC_VM_NETWORK_BRIDGE:-brbm}
 IRONIC_VM_NETWORK_RANGE=${IRONIC_VM_NETWORK_RANGE:-192.0.2.0/24}
 IRONIC_VM_MACS_CSV_FILE=${IRONIC_VM_MACS_CSV_FILE:-$IRONIC_DATA_DIR/ironic_macs.csv}
 IRONIC_AUTHORIZED_KEYS_FILE=${IRONIC_AUTHORIZED_KEYS_FILE:-$HOME/.ssh/authorized_keys}
+
+# By default, baremetal VMs will console output to file.
+IRONIC_VM_LOG_CONSOLE=${IRONIC_VM_LOG_CONSOLE:-True}
+IRONIC_VM_LOG_DIR=${IRONIC_VM_LOG_DIR:-$IRONIC_DATA_DIR/logs/}
 
 DIB_DIR=${DIB_DIR:-$DEST/diskimage-builder}
 
@@ -141,6 +147,11 @@ function configure_ironic {
         configure_ironic_api
     fi
 
+    # Format logging
+    if [ "$LOG_COLOR" == "True" ] && [ "$SYSLOG" == "False" ]; then
+        setup_colorized_logging $IRONIC_CONF_FILE DEFAULT
+    fi
+
     if [[ "$IRONIC_BAREMETAL_BASIC_OPS" == "True" ]]; then
         configure_ironic_auxiliary
     fi
@@ -181,11 +192,14 @@ function configure_ironic_conductor {
     sudo mv $TEMPFILE /etc/sudoers.d/ironic-rootwrap
 
     iniset $IRONIC_CONF_FILE DEFAULT rootwrap_config $IRONIC_ROOTWRAP_CONF
-    iniset $IRONIC_CONF_FILE DEFAULT drivers_whitelist $IRONIC_DRIVERS_WHITELIST
+    iniset $IRONIC_CONF_FILE DEFAULT enabled_drivers $IRONIC_ENABLED_DRIVERS
     iniset $IRONIC_CONF_FILE conductor api_url http://$HOST_IP:6385
     iniset $IRONIC_CONF_FILE pxe tftp_server $HOST_IP
     iniset $IRONIC_CONF_FILE pxe tftp_root $IRONIC_TFTPBOOT_DIR
     iniset $IRONIC_CONF_FILE pxe tftp_master_path $IRONIC_TFTPBOOT_DIR/master_images
+    if [[ "$IRONIC_VM_LOG_CONSOLE" == "True" ]] ; then
+        iniset $IRONIC_CONF_FILE pxe pxe_append_params "nofb nomodeset vga=normal console=ttyS0"
+    fi
 }
 
 # create_ironic_cache_dir() - Part of the init_ironic() process
@@ -315,9 +329,15 @@ function configure_ironic_dirs {
 function create_bridge_and_vms {
     # Call libvirt setup scripts in a new shell to ensure any new group membership
     sudo su $STACK_USER -c "$IRONIC_SCRIPTS_DIR/setup-network"
+    if [[ "$IRONIC_VM_LOG_CONSOLE" == "True" ]] ; then
+        LOG_ARG="$IRONIC_VM_LOG_DIR"
+    else
+        LOG_ARG=""
+    fi
     sudo su $STACK_USER -c "$IRONIC_SCRIPTS_DIR/create-nodes \
         $IRONIC_VM_SPECS_CPU $IRONIC_VM_SPECS_RAM $IRONIC_VM_SPECS_DISK \
-        amd64 $IRONIC_VM_COUNT $IRONIC_VM_NETWORK_BRIDGE $IRONIC_VM_EMULATOR" >> $IRONIC_VM_MACS_CSV_FILE
+        amd64 $IRONIC_VM_COUNT $IRONIC_VM_NETWORK_BRIDGE $IRONIC_VM_EMULATOR \
+        $LOG_ARG" >> $IRONIC_VM_MACS_CSV_FILE
 }
 
 function enroll_vms {
@@ -337,6 +357,8 @@ function enroll_vms {
     while read MAC; do
 
         NODE_ID=$(ironic node-create --chassis_uuid $CHASSIS_ID --driver pxe_ssh \
+            -i pxe_deploy_kernel=$IRONIC_DEPLOY_KERNEL_ID \
+            -i pxe_deploy_ramdisk=$IRONIC_DEPLOY_RAMDISK_ID \
             -i ssh_virt_type=$IRONIC_SSH_VIRT_TYPE \
             -i ssh_address=$IRONIC_VM_SSH_ADDRESS \
             -i ssh_port=$IRONIC_VM_SSH_PORT \
@@ -355,7 +377,12 @@ function enroll_vms {
     done < $IRONIC_VM_MACS_CSV_FILE
 
     # create the nova flavor
-    nova flavor-create baremetal auto $IRONIC_VM_SPECS_RAM $IRONIC_VM_SPECS_DISK $IRONIC_VM_SPECS_CPU
+    adjusted_disk=$(($IRONIC_VM_SPECS_DISK - $IRONIC_VM_EPHEMERAL_DISK))
+    nova flavor-create --ephemeral $IRONIC_VM_EPHEMERAL_DISK baremetal auto $IRONIC_VM_SPECS_RAM $adjusted_disk $IRONIC_VM_SPECS_CPU
+    # TODO(lucasagomes): Remove the 'baremetal:deploy_kernel_id'
+    # and 'baremetal:deploy_ramdisk_id' parameters
+    # from the flavor after the completion of
+    # https://blueprints.launchpad.net/ironic/+spec/add-node-instance-info
     nova flavor-key baremetal set "cpu_arch"="x86_64" "baremetal:deploy_kernel_id"="$IRONIC_DEPLOY_KERNEL_ID" "baremetal:deploy_ramdisk_id"="$IRONIC_DEPLOY_RAMDISK_ID"
 
     # intentional sleep to make sure the tag has been set to port
@@ -379,11 +406,16 @@ function enroll_vms {
     neutron port-delete $PORT_ID
 }
 
-function configure_tftpd {
-    # enable tftp natting for allowing connections to SERVICE_HOST's tftp server
+function configure_iptables {
+    # enable tftp natting for allowing connections to HOST_IP's tftp server
     sudo modprobe nf_conntrack_tftp
     sudo modprobe nf_nat_tftp
+    # nodes boot from TFTP and callback to the API server listening on $HOST_IP
+    sudo iptables -I INPUT -d $HOST_IP -p udp --dport 69 -j ACCEPT || true
+    sudo iptables -I INPUT -d $HOST_IP -p tcp --dport 6385 -j ACCEPT || true
+}
 
+function configure_tftpd {
     if is_ubuntu; then
         PXEBIN=/usr/lib/syslinux/pxelinux.0
     elif is_fedora; then
@@ -506,6 +538,7 @@ function prepare_baremetal_basic_ops {
     create_bridge_and_vms
     enroll_vms
     configure_tftpd
+    configure_iptables
 
     # restart nova-compute to ensure its resource tracking is up to
     # date with newly enrolled nodes
@@ -525,6 +558,10 @@ function cleanup_baremetal_basic_ops {
     sudo su $STACK_USER -c "$IRONIC_SCRIPTS_DIR/cleanup-nodes $IRONIC_VM_COUNT $IRONIC_VM_NETWORK_BRIDGE"
     sudo rm -rf /etc/xinetd.d/tftp /etc/init/tftpd-hpa.override
     restart_service xinetd
+    sudo iptables -D INPUT -d $HOST_IP -p udp --dport 69 -j ACCEPT || true
+    sudo iptables -D INPUT -d $HOST_IP -p tcp --dport 6385 -j ACCEPT || true
+    sudo rmmod nf_conntrack_tftp || true
+    sudo rmmod nf_nat_tftp || true
 }
 
 # Restore xtrace + pipefail
